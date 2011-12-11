@@ -1,12 +1,21 @@
-try:
-    import gdb
-except ImportError:
-    print "Not running inside of GDB, exiting..."
-    exit()
 
+import haystack
+from haystack import model , dump_loader
+from haystack.model import LoadableMembers
 import sys
 import struct
 from os import uname
+
+from haystack.config import Config
+
+import haystack_gdb as Gdb
+
+fdump = '/home/jal/Compil/python-haystack/test/test-ctypes3.dump.1'
+
+mappings = dump_loader.load(file(fdump,'rb'))
+heap = mappings.getHeap()
+
+gdb = Gdb.Gdb(mappings, heap)
 
 # bash color support
 color_support = True
@@ -47,11 +56,7 @@ c_value  = c_blue_b
 # MALLOC CONSTANTS AND MACROS
 ################################################################################
 
-_machine = uname()[4]
-if _machine == "x86_64":
-    SIZE_SZ = 8
-elif _machine in ("i386", "i686"):
-    SIZE_SZ = 4
+SIZE_SZ = Config.WORDSIZE
 
 MIN_CHUNK_SIZE    = 4 * SIZE_SZ
 MALLOC_ALIGNMENT  = 2 * SIZE_SZ
@@ -141,6 +146,7 @@ def clear_inuse_bit_at_offset(p, s):
     chunk.write()
 
 def bin_at(m, i):
+    raise NotImplementedError('bin_at()')
     "addressing -- note that bin_at(0) does not exist"
     if SIZE_SZ == 4:
         offsetof_fd = 0x8
@@ -284,6 +290,8 @@ def set_contiguous(M, inferior=None):
     inferior.write_memory(M.address, struct.pack("<I", M.flags))
 
 def get_max_fast():
+    print 'NotImplementedError("get_max_fast()")'
+    raise NotImplementedError('get_max_fast()')
     return gdb.parse_and_eval("global_max_fast")
 
 def mutex_lock(ar_ptr, inferior=None):
@@ -855,7 +863,6 @@ class heap_info_printer:
 ################################################################################
 def pretty_print_heap_lookup(val):
     "Look-up and return a pretty-printer that can print val."
-
     # Get the type.
     type = val.type
 
@@ -889,13 +896,11 @@ def pretty_print_heap_lookup(val):
 # GDB COMMANDS
 ################################################################################
 
-class print_malloc_stats(gdb.Command):
+class print_malloc_stats():
     "print general malloc stats, adapted from malloc.c mSTATs()"
 
     def __init__(self):
-        super(print_malloc_stats, self).__init__("print_mstats", 
-                                        gdb.COMMAND_DATA, gdb.COMPLETE_NONE)
-
+      pass
     def invoke(self, arg, from_tty):
         "Specify an optional arena addr: print_mstats main_arena=0x12345"
 
@@ -1005,11 +1010,11 @@ class print_malloc_stats(gdb.Command):
 
 
 ################################################################################
-class heap(gdb.Command):
+class heap(Gdb.Command):
     "print a comprehensive view of the heap"
-
     def __init__(self):
-        super(heap, self).__init__("heap", gdb.COMMAND_DATA, gdb.COMPLETE_NONE)
+      self.invoke(' '.join(sys.argv), True)
+      pass
 
     def invoke(self, arg, from_tty):
         "Usage can be obtained via heap -h"
@@ -1104,6 +1109,7 @@ class heap(gdb.Command):
             print c_error + "Invalid arena address (0)" + c_none
             return 
 
+        print 'arena_address: %x '%(arena_address)
         ar_ptr = malloc_state(arena_address)
 
         if len(arg) == 0:
@@ -1202,7 +1208,11 @@ def read_proc_maps(pid):
     Locate the stack of a process using /proc/pid/maps.
     Will not work on hardened machines (grsec).
     '''
-
+    #libc_end, heap_start
+    libc = [ m for m in gdb.mappings if 'libc-' in m.pathname]
+    libc_end=libc[0].end
+    return libc_end, gdb.heap.start
+    
     filename = '/proc/%d/maps' % pid
 
     try:
@@ -1332,7 +1342,7 @@ def print_bins(inferior, fb_base, sb_base):
     for fb in xrange(0,NFASTBINS):
         print_once = True
         p = malloc_chunk(fb_base-(2*SIZE_SZ)+fb*SIZE_SZ, inuse=False)
-
+        
         while (p.fd != 0):
             if print_once:
                 print_once = False
@@ -1448,13 +1458,11 @@ def print_compact_listing(ar_ptr, sbrk_base):
 
 
 ################################################################################
-class print_bin_layout(gdb.Command):
+class print_bin_layout(Gdb.Command):
     "dump the layout of a free bin"
 
     def __init__(self):
-        super(print_bin_layout, self).__init__("print_bin_layout", 
-                                        gdb.COMMAND_DATA, gdb.COMPLETE_NONE)
-
+      pass
     def invoke(self, arg, from_tty):
         "Specify an optional arena addr: print_bin_layout main_arena=0x12345"
 
@@ -1533,13 +1541,11 @@ class print_bin_layout(gdb.Command):
 
 
 ################################################################################
-class check_house_of_mind(gdb.Command):
+class check_house_of_mind(Gdb.Command):
     "print and help validate a house of mind layout"
 
     def __init__(self):
-        super(check_house_of_mind, self).__init__("check_house_of_mind", 
-                                        gdb.COMMAND_DATA, gdb.COMPLETE_NONE)
-
+      pass
     def invoke(self, arg, from_tty):
         """
         Specify the house of mind method and chunk address (p=mem2chunk(mem)):
@@ -1852,4 +1858,8 @@ heap()
 print_malloc_stats()
 print_bin_layout()
 check_house_of_mind()
-gdb.pretty_printers.append(pretty_print_heap_lookup)
+#gdb.pretty_printers.append(pretty_print_heap_lookup)
+
+
+
+
