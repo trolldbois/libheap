@@ -10,14 +10,12 @@ import ctypes
 import logging
 import sys
 
-from haystack import model
+from haystack import model, memory_mapping
 from haystack.model import is_valid_address,is_valid_address_value,pointer2bytes,array2bytes,bytes2array,getaddress
 from haystack.model import LoadableMembers,RangeValue,NotNull,CString, IgnoreMember, PerfectMatch
 
 from haystack.config import Config
 import struct
-import libheap
-import math
 
 log=logging.getLogger('ctypes_malloc')
 
@@ -45,7 +43,41 @@ if Config.WORDSIZE == 4:
 elif Config.WORDSIZE == 8:
   UINT = ctypes.c_uint64
 
+def getUserAllocations(mappings, heap):
+  ''' 
+  Lists all (addr, size) of allocated space by malloc_chunks.
+  '''
+  #allocations = [] # index, size
+  orig_addr = heap.start
+  
+  chunk = heap.readStruct(orig_addr, malloc_chunk)
+  ret = chunk.loadMembers(mappings, 10, orig_addr)
+  if not ret:
+    raise ValueError('heap dos not start with an malloc_chunk')
+  #data = chunk.getUserData(mappings, orig_addr)
+  #print chunk.toString(''), 'real_size = ', chunk.real_size()
+  #print hexdump(data)
+  #print ' ---------------- '
+  yield  (chunk.get_mem_addr(orig_addr), chunk.get_mem_size()) 
 
+  while True:
+    next, next_addr = chunk.getNextChunk(mappings, orig_addr)
+    if next_addr is None:
+      #print 'no next chunk'
+      break
+    #print ' next_addr 0x%x, size: %x'%(next_addr, next.size)   
+    ret = next.loadMembers(mappings, 10, next_addr)
+    if not ret:
+      raise ValueError
+    #print next.toString(''), 'real_size = ', next.real_size()
+    #print test.hexdump(next.getUserData(mappings, next_addr))
+    #print ' ---------------- '
+    yield (next.get_mem_addr(next_addr), next.get_mem_size()) 
+    # next loop
+    orig_addr = next_addr
+    chunk = next
+
+  raise StopIteration
 
 class malloc_chunk(mallocStruct):
   '''FAKE python representation of a struct malloc_chunk
@@ -69,8 +101,14 @@ struct malloc_chunk {
 0000030 0000 0000 0000 0000 0000 0000 0000 0000
 
   '''
+  def get_mem_addr(self, orig_addr):
+    return orig_addr + 2*Config.WORDSIZE
+
+  def get_mem_size(self):
+    return self.real_size() - Config.WORDSIZE
+    
   def real_size(self):
-    return (self.size & ~libheap.SIZE_BITS)
+    return (self.size & ~SIZE_BITS)
 
   def next_addr(self, orig_addr):
     return orig_addr + self.real_size()
@@ -81,11 +119,17 @@ struct malloc_chunk {
     return self.size & PREV_INUSE
 
   def check_inuse(self, mappings, orig_addr):
-    "extract p's inuse bit"
-    next, next_addr = self.getNextChunk(mappings, orig_addr)
-    if next is None:
-      raise ValueError()
-    return next.size & PREV_INUSE
+    '''extract p's inuse bit
+    doesnt not work on the top one
+    '''
+    next_addr = self.next_addr(orig_addr) + ctypes.sizeof(memory_mapping.MemoryMapping.WORDTYPE)
+    mmap = model.is_valid_address_value(next_addr, mappings)
+    if not mmap:
+      return 0
+      #raise ValueError()
+    next_size = mmap.readWord( next_addr)
+    #print 'next_size',next_size, '%x'%next_addr
+    return next_size & PREV_INUSE
 
   
   def isValid(self, mappings, orig_addr):
@@ -122,10 +166,11 @@ struct malloc_chunk {
     
     # update virtual fields
     next, next_addr = self.getNextChunk(mappings, orig_addr)
-    if next_addr is None: #most of the time it
-      return False
+    #if next_addr is None: #most of the time its not
+    #  return True
 
     if self.check_prev_inuse() : # if in use, prev_size is not readable
+      #self.prev_size = 0
       pass
     else:
       prev,prev_addr = self.getPrevChunk(mappings, orig_addr)
@@ -140,7 +185,7 @@ struct malloc_chunk {
       raise TypeError('Previous chunk is in use. can read its size.')
     mmap = model.is_valid_address_value(orig_addr, mappings)
     if not mmap:
-      return None, None
+      raise ValueError
     if self.prev_size > 0 :
       prev_addr = orig_addr - self.prev_size
       prev_chunk = mmap.readStruct(prev_addr, malloc_chunk )
@@ -152,55 +197,15 @@ struct malloc_chunk {
     ## do next_chunk
     mmap = model.is_valid_address_value(orig_addr, mappings)
     if not mmap:
-      print 'nextchunk is no mmap %x'%(orig_addr)
-      return None, None
+      raise ValueError
     next_addr = orig_addr + self.real_size()
+    # check if its in mappings
+    if not model.is_valid_address_value(next_addr, mappings):
+      return None,None
     next_chunk = mmap.readStruct(next_addr, malloc_chunk )
     model.keepRef( next_chunk, malloc_chunk, next_addr)
     return next_chunk, next_addr
 
-  def getUserData(self, mappings, orig_addr):
-    ## inuse : to know if inuse, you have to look at next_chunk.size & PREV_SIZE bit
-    inuse = self.check_inuse(mappings, orig_addr) 
-    if not inuse:
-      return None
-    
-    data = None
-    addr = orig_addr
-    mmap = model.is_valid_address_value(addr, mappings)
-    if not mmap:
-      log.error('bad orig_addr')
-      return False
-    
-    real_size = (self.size & ~libheap.SIZE_BITS)
-    
-    if inuse:
-      mem = mmap.readBytes(addr, real_size + Config.WORDSIZE)
-      if Config.WORDSIZE == 4:
-        off = 0x8
-      elif Config.WORDSIZE == 8:
-        off = 0x10
-
-      return mem[off:off+real_size]
-
-    elif not inuse:
-      if Config.WORDSIZE == 4:
-        mem = mmap.readBytes(addr, 0x18)
-      elif Config.WORDSIZE == 8:
-        mem = mmap.readBytes(addr, 0x30)
-
-      if Config.WORDSIZE == 4:
-        (self.fd,         \
-        self.bk,          \
-        self.fd_nextsize, \
-        self.bk_nextsize) = struct.unpack_from("<IIII", mem, 0x8)
-      elif Config.WORDSIZE == 8:
-        (self.fd,         \
-        self.bk,          \
-        self.fd_nextsize, \
-        self.bk_nextsize) = struct.unpack_from("<QQQQ", mem, 0x10)
-
-    return None
 
 
 malloc_chunk._fields_ = [
@@ -214,45 +219,6 @@ malloc_chunk._fields_ = [
 malloc_chunk.expectedValues = {    }
 
 
-
-
-'''
-    def write(self, inferior=None):
-        if self.fd == None and self.bk == None:
-            inuse = True
-        else:
-            inuse = False
-
-        if inferior == None:
-            inferior = get_inferior()
-            if inferior == -1:
-                return None
-
-        if inuse:
-            if SIZE_SZ == 4:
-                mem = struct.pack("<II", self.prev_size, self.size)
-                if self.data != None:
-                    mem += struct.pack("<%dI" % len(self.data), *self.data)
-            elif SIZE_SZ == 8:
-                mem = struct.pack("<QQ", self.prev_size, self.size)
-                if self.data != None:
-                    mem += struct.pack("<%dQ" % len(self.data), *self.data)
-        else:
-            if SIZE_SZ == 4:
-                mem = struct.pack("<IIIIII", self.prev_size, self.size, \
-                        self.fd, self.bk, self.fd_nextsize, self.bk_nextsize)
-            elif SIZE_SZ == 8:
-                mem = struct.pack("<QQQQQQ", self.prev_size, self.size, \
-                        self.fd, self.bk, self.fd_nextsize, self.bk_nextsize)
-
-        inferior.write_memory(self.address, mem)
-
-################################################################################
-'''
-
-#malloc_chunk.isValid = malloc_chunk_isValid
-#malloc_chunk.loadMembers = malloc_chunk_loadMembers
-#malloc_chunk.getUserData = malloc_chunk_getUserData
 
 
 model.registerModule(sys.modules[__name__])
