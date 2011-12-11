@@ -23,7 +23,8 @@ class Gdb:
   
   def read_memory(self, addr, size):
     mmap = model.is_valid_address_value(addr, self.mappings)
-    print mmap
+    if not mmap :
+      raise RuntimeError
     return mmap.readBytes(addr, size)
 
   class Frame:

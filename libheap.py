@@ -10,7 +10,7 @@ from haystack.config import Config
 
 import haystack_gdb as Gdb
 
-fdump = '/home/jal/Compil/python-haystack/test/test-ctypes3.dump.1'
+fdump = '/home/jal/Compil/python-haystack/test/test-ctypes3.dump.2'
 
 mappings = dump_loader.load(file(fdump,'rb'))
 heap = mappings.getHeap()
@@ -1343,7 +1343,7 @@ def print_bins(inferior, fb_base, sb_base):
         print_once = True
         p = malloc_chunk(fb_base-(2*SIZE_SZ)+fb*SIZE_SZ, inuse=False)
         
-        while (p.fd != 0):
+        while (p.fd != 0 and not p.fd is None):
             if print_once:
                 print_once = False
                 print c_header + "  fast bin %d   @ 0x%lx" % \
@@ -1358,7 +1358,7 @@ def print_bins(inferior, fb_base, sb_base):
         b = sb_base + i*2*SIZE_SZ - 4*SIZE_SZ
         p = malloc_chunk(first(malloc_chunk(b, inuse=False)), inuse=False)
 
-        while p.address != b:
+        while hasattr(p, 'address') and p.address != b:
             if print_once:
                 print_once = False
                 if i==1:
@@ -1411,6 +1411,9 @@ def print_flat_listing(ar_ptr, sbrk_base):
             print "%s" % "(inuse)"
         else:
             p = malloc_chunk(p.address, inuse=False)
+            if p.fd is None:
+              print 'p.fd is NONE'
+              break
             print "(F) FD %s0x%lx%s BK %s0x%lx%s" % \
                     (c_value, p.fd, c_none,c_value,p.bk,c_none),
 
@@ -1854,10 +1857,11 @@ class check_house_of_mind(Gdb.Command):
 # INITIALIZE CUSTOM GDB CODE
 ################################################################################
 
-heap()
-print_malloc_stats()
-print_bin_layout()
-check_house_of_mind()
+if __name__ == 'main':
+  heap()
+  print_malloc_stats()
+  print_bin_layout()
+  check_house_of_mind()
 #gdb.pretty_printers.append(pretty_print_heap_lookup)
 
 
