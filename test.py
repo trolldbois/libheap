@@ -10,22 +10,29 @@ import ctypes, ctypes_malloc
 from haystack.config import Config
 import logging
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 def quotechars( chars ):
 	return ''.join( ['.', c][c.isalnum()] for c in chars )
 
-def hexdump( chars, sep=' ', width=20 ):
-  b=''
-  while chars:
-	  line = chars[:width]
-	  chars = chars[width:]
-	  line = line.ljust( width, '\000' )
-	  b+= "%s%s%s\n" % ( sep.join( "%02x" % ord(c) for c in line ),
-		   sep, quotechars( line ))
-  return b
-  
-fdump = '/home/jal/Compil/python-haystack/test/test-ctypes3.dump.1'
+def hexdump(data):
+  s='%08x '%0
+  numwords = len(data)/2
+  for i in range(0, numwords*2 ,2):
+    s+="%04x "% struct.unpack('<H' ,data[i:i+2])[0]
+    if i%0xf==0xe:
+      s+="\r\n%08x "%(i+2)
+    elif i%2==1:
+      s+=" "
+  if len(data) % 2:
+    s+="%04x "% struct.unpack('<H' ,data[i:])[0]
+  return s
+
+
+try:
+  fdump = sys.argv[1]
+except IndexError,e:
+  fdump = '/home/jal/Compil/python-haystack/test/test-ctypes3.dump.2'
 
 mappings = dump_loader.load(file(fdump,'rb'))
 heap = mappings.getHeap()
@@ -33,30 +40,14 @@ heap = mappings.getHeap()
 start = heap.start
 orig_addr = start
 
-malloc_chunk = ctypes_malloc.malloc_chunk
+allocs = ctypes_malloc.getUserAllocations(mappings, heap)
 
-chunk = heap.readStruct(start, malloc_chunk)
-ret = chunk.loadMembers(mappings, 10, orig_addr)
-if not ret:
-  print 'not loaded'
-  raise ValueError
-#print chunk
+for addr, size in allocs:
+  print 'addr: 0x%08x size: 0x%x'% ( addr, size)
+  if size < 48:
+    print hexdump(heap.readBytes(addr,size))
+  print ' ---------------- '
+  
 
-data = chunk.getUserData(mappings, orig_addr)
-
-print chunk.toString('')
-print 'user data :\n ', hexdump(data)
-print ' ---------------- '
-
-next = chunk.next_chunk
-orig_addr = ctypes.addressof(next)
-ret = next.loadMembers(mappings, 10, orig_addr)
-if not ret:
-  print 'not loaded'
-  raise ValueError
-
-print next
-print 'user data :\n ', hexdump(next.getUserData(mappings, orig_addr))
-print ' ---------------- '
 
 
